@@ -205,6 +205,10 @@ function gen_outbound(flag, node, tag, proxy_table)
 					path = node.httpupgrade_path or "/",
 					host = node.httpupgrade_host
 				} or nil,
+				splithttpSettings = (node.transport == "splithttp") and {
+					path = node.splithttp_path or "/",
+					host = node.splithttp_host
+				} or nil,
 			} or nil,
 			settings = {
 				vnext = (node.protocol == "vmess" or node.protocol == "vless") and {
@@ -480,6 +484,10 @@ function gen_config_server(node)
 					httpupgradeSettings = (node.transport == "httpupgrade") and {
 						path = node.httpupgrade_path or "/",
 						host = node.httpupgrade_host
+					} or nil,
+					splithttpSettings = (node.transport == "splithttp") and {
+						path = node.splithttp_path or "/",
+						host = node.splithttp_host
 					} or nil,
 					sockopt = {
 						acceptProxyProtocol = (node.acceptProxyProtocol and node.acceptProxyProtocol == "1") and true or false
@@ -947,6 +955,7 @@ function gen_config(var)
 							if w:find("#") == 1 then return end
 							table.insert(domains, w)
 						end)
+						if #domains == 0 then domains = nil end
 					end
 					local ip = nil
 					if e.ip_list then
@@ -955,6 +964,7 @@ function gen_config(var)
 							if w:find("#") == 1 then return end
 							table.insert(ip, w)
 						end)
+						if #ip == 0 then ip = nil end
 					end
 					local source = nil
 					if e.source then
@@ -993,6 +1003,7 @@ function gen_config(var)
 				end
 			end)
 
+		--[[
 			if default_outbound_tag or default_balancer_tag then
 				table.insert(rules, {
 					type = "field",
@@ -1001,6 +1012,7 @@ function gen_config(var)
 					network = "tcp,udp"
 				})
 			end
+		]]--
 
 			routing = {
 				domainStrategy = node.domainStrategy or "AsIs",
