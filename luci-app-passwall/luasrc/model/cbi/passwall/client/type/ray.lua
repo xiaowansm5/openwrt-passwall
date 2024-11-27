@@ -7,6 +7,7 @@ if not api.finded_com("xray") then
 end
 
 local appname = "passwall"
+local jsonc = api.jsonc
 local uci = api.uci
 
 local type_name = "Xray"
@@ -321,7 +322,7 @@ o = s:option(ListValue, option_name("flow"), translate("flow"))
 o.default = ""
 o:value("", translate("Disable"))
 o:value("xtls-rprx-vision")
-o:depends({ [option_name("protocol")] = "vless", [option_name("tls")] = true, [option_name("transport")] = "tcp" })
+o:depends({ [option_name("protocol")] = "vless", [option_name("tls")] = true, [option_name("transport")] = "raw" })
 
 o = s:option(Flag, option_name("tls"), translate("TLS"))
 o.default = 0
@@ -334,9 +335,10 @@ o:depends({ [option_name("protocol")] = "shadowsocks" })
 
 o = s:option(Flag, option_name("reality"), translate("REALITY"), translate("Only recommend to use with VLESS-TCP-XTLS-Vision."))
 o.default = 0
-o:depends({ [option_name("tls")] = true, [option_name("transport")] = "tcp" })
+o:depends({ [option_name("tls")] = true, [option_name("transport")] = "raw" })
 o:depends({ [option_name("tls")] = true, [option_name("transport")] = "h2" })
 o:depends({ [option_name("tls")] = true, [option_name("transport")] = "grpc" })
+o:depends({ [option_name("tls")] = true, [option_name("transport")] = "xhttp" })
 
 o = s:option(ListValue, option_name("alpn"), translate("alpn"))
 o.default = "default"
@@ -392,7 +394,7 @@ o:depends({ [option_name("tls")] = true, [option_name("utls")] = true })
 o:depends({ [option_name("tls")] = true, [option_name("reality")] = true })
 
 o = s:option(ListValue, option_name("transport"), translate("Transport"))
-o:value("tcp", "TCP")
+o:value("raw", "RAW (TCP)")
 o:value("mkcp", "mKCP")
 o:value("ws", "WebSocket")
 o:value("h2", "HTTP/2")
@@ -400,7 +402,7 @@ o:value("ds", "DomainSocket")
 o:value("quic", "QUIC")
 o:value("grpc", "gRPC")
 o:value("httpupgrade", "HttpUpgrade")
-o:value("splithttp", "SplitHTTP")
+o:value("xhttp", "XHTTP (SplitHTTP)")
 o:depends({ [option_name("protocol")] = "vmess" })
 o:depends({ [option_name("protocol")] = "vless" })
 o:depends({ [option_name("protocol")] = "socks" })
@@ -432,13 +434,13 @@ o = s:option(Value, option_name("wireguard_keepAlive"), translate("Keep Alive"))
 o.default = "0"
 o:depends({ [option_name("protocol")] = "wireguard" })
 
--- [[ TCP部分 ]]--
+-- [[ RAW部分 ]]--
 
 -- TCP伪装
 o = s:option(ListValue, option_name("tcp_guise"), translate("Camouflage Type"))
 o:value("none", "none")
 o:value("http", "http")
-o:depends({ [option_name("transport")] = "tcp" })
+o:depends({ [option_name("transport")] = "raw" })
 
 -- HTTP域名
 o = s:option(DynamicList, option_name("tcp_guise_http_host"), translate("HTTP Host"))
@@ -566,16 +568,46 @@ o = s:option(Value, option_name("httpupgrade_path"), translate("HttpUpgrade Path
 o.placeholder = "/"
 o:depends({ [option_name("transport")] = "httpupgrade" })
 
--- [[ SplitHTTP部分 ]]--
-o = s:option(Value, option_name("splithttp_host"), translate("SplitHTTP Host"))
-o:depends({ [option_name("transport")] = "splithttp" })
+-- [[ XHTTP部分 ]]--
+o = s:option(ListValue, option_name("xhttp_mode"), "XHTTP " .. translate("Mode"))
+o:depends({ [option_name("transport")] = "xhttp" })
+o.default = "auto"
+o:value("auto")
+o:value("packet-up")
+o:value("stream-up")
 
-o = s:option(Value, option_name("splithttp_path"), translate("SplitHTTP Path"))
+o = s:option(Value, option_name("xhttp_host"), translate("XHTTP Host"))
+o:depends({ [option_name("transport")] = "xhttp" })
+
+o = s:option(Value, option_name("xhttp_path"), translate("XHTTP Path"))
 o.placeholder = "/"
-o:depends({ [option_name("transport")] = "splithttp" })
+o:depends({ [option_name("transport")] = "xhttp" })
 
--- [[ Mux ]]--
-o = s:option(Flag, option_name("mux"), translate("Mux"))
+o = s:option(TextValue, option_name("xhttp_extra"), translate("XHTTP Extra"), translate("An <a target='_blank' href='https://xtls.github.io/config/transports/splithttp.html#extra'>XHTTP extra object</a> in raw json"))
+o:depends({ [option_name("transport")] = "xhttp" })
+o.rows = 15
+o.wrap = "off"
+o.custom_write = function(self, section, value)
+	m:set(section, self.option:sub(1 + #option_prefix), value)
+	local data = value and value ~= "" and jsonc.parse(value)
+	local address = (data and data.extra and data.extra.downloadSettings and data.extra.downloadSettings.address)
+			or (data and data.downloadSettings and data.downloadSettings.address)
+	if address and address ~= "" then
+		m:set(section, "download_address", address)
+	else
+		m:del(section, "download_address")
+	end
+end
+o.validate = function(self, value)
+	value = value:gsub("\r\n", "\n"):gsub("^[ \t]*\n", ""):gsub("\n[ \t]*$", ""):gsub("\n[ \t]*\n", "\n")
+	if value:sub(-1) == "\n" then
+		value = value:sub(1, -2)
+	end
+	return value
+end
+
+-- [[ Mux.Cool ]]--
+o = s:option(Flag, option_name("mux"), "Mux", translate("Enable Mux.Cool"))
 o:depends({ [option_name("protocol")] = "vmess" })
 o:depends({ [option_name("protocol")] = "vless", [option_name("flow")] = "" })
 o:depends({ [option_name("protocol")] = "http" })
@@ -588,7 +620,7 @@ o.default = 8
 o:depends({ [option_name("mux")] = true })
 
 -- [[ XUDP Mux ]]--
-o = s:option(Flag, option_name("xmux"), translate("xMux"))
+o = s:option(Flag, option_name("xmux"), "XUDP Mux")
 o.default = 1
 o:depends({ [option_name("protocol")] = "vless", [option_name("flow")] = "xtls-rprx-vision" })
 

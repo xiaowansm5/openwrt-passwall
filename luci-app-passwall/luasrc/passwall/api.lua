@@ -720,6 +720,7 @@ local default_file_tree = {
 	mips    = "mips",
 	mips64  = "mips64",
 	mipsel  = "mipsel",
+	mips64el = "mips64el",
 	armv5   = "arm.*5",
 	armv6   = "arm.*6[^4]*",
 	armv7   = "arm.*7",
@@ -784,7 +785,7 @@ function to_check(arch, app_name)
 		remote_version = remote_version:gsub(com[app_name].remote_version_str_replace, "")
 	end
 	local has_update = compare_versions(local_version:match("[^v]+"), "<", remote_version:match("[^v]+"))
-
+--[[
 	if not has_update then
 		return {
 			code = 0,
@@ -792,7 +793,7 @@ function to_check(arch, app_name)
 			remote_version = remote_version
 		}
 	end
-
+]]--
 	local asset = {}
 	for _, v in ipairs(json.assets) do
 		if v.name and v.name:match(match_file_name) then
@@ -813,7 +814,7 @@ function to_check(arch, app_name)
 
 	return {
 		code = 0,
-		has_update = true,
+		has_update = has_update,
 		local_version = local_version,
 		remote_version = remote_version,
 		html_url = json.html_url,
@@ -986,7 +987,11 @@ function to_move(app_name,file)
 end
 
 function get_version()
-	return sys.exec("echo -n $(opkg list-installed luci-app-passwall |awk '{print $3}')")
+	local version = sys.exec("opkg list-installed luci-app-passwall 2>/dev/null | awk '{print $3}'")
+	if not version or #version == 0 then
+		version = sys.exec("apk info luci-app-passwall 2>/dev/null | awk 'NR == 1 {print $1}' | cut -d'-' -f4-")
+	end
+	return version or ""
 end
 
 function to_check_self()
@@ -1003,6 +1008,7 @@ function to_check_self()
 	end
 	local local_version  = get_version()
 	local remote_version = sys.exec("echo -n $(grep 'PKG_VERSION' /tmp/passwall_makefile|awk -F '=' '{print $2}')")
+	exec("/bin/rm", {"-f", tmp_file})
 
 	local has_update = compare_versions(local_version, "<", remote_version)
 	if not has_update then
@@ -1045,11 +1051,16 @@ function luci_types(id, m, s, type_name, option_prefix)
 				end
 				s.fields[key].write = function(self, section, value)
 					if s.fields["type"]:formvalue(id) == type_name then
-						if self.rewrite_option then
-							m:set(section, self.rewrite_option, value)
+						-- 添加自定义 custom_write 属性，如果有自定义的 custom_write 函数，则使用自定义的 write 逻辑
+						if self.custom_write then
+							self:custom_write(section, value)
 						else
-							if self.option:find(option_prefix) == 1 then
-								m:set(section, self.option:sub(1 + #option_prefix), value)
+							if self.rewrite_option then
+								m:set(section, self.rewrite_option, value)
+							else
+								if self.option:find(option_prefix) == 1 then
+									m:set(section, self.option:sub(1 + #option_prefix), value)
+								end
 							end
 						end
 					end
@@ -1077,4 +1088,25 @@ function luci_types(id, m, s, type_name, option_prefix)
 			end
 		end
 	end
+end
+
+function get_std_domain(domain)
+	domain = trim(domain)
+	if domain == "" or domain:find("#") then return "" end
+	-- 删除首尾所有的 .
+	domain = domain:gsub("^[%.]+", ""):gsub("[%.]+$", "")
+	-- 如果 domain 包含 '*'，则分割并删除包含 '*' 的部分及其前面的部分
+	if domain:find("%*") then
+		local parts = {}
+		for part in domain:gmatch("[^%.]+") do
+			table.insert(parts, part)
+		end
+		for i = #parts, 1, -1 do
+			if parts[i]:find("%*") then
+				-- 删除包含 '*' 的部分及其前面的部分
+				return parts[i + 1] and parts[i + 1] .. "." .. table.concat(parts, ".", i + 2) or ""
+			end
+		end
+	end
+	return domain
 end

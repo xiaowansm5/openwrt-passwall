@@ -54,6 +54,11 @@ o = s:option(Value, "remarks", translate("Remarks"))
 o.default = arg[1]
 o.rmempty = true
 
+o = s:option(ListValue, "interface", translate("Source Interface"))
+o:value("", translate("All"))
+local wa = require "luci.tools.webadmin"
+wa.cbi_add_networks(o)
+
 local mac_t = {}
 sys.net.mac_hints(function(e, t)
 	mac_t[#mac_t + 1] = {
@@ -263,7 +268,7 @@ o:depends({ tcp_node = "",  ['!reverse'] = true })
 o = s:option(ListValue, "dns_shunt", "DNS " .. translate("Shunt"))
 o:depends({ tcp_node = "",  ['!reverse'] = true })
 o:value("dnsmasq", "Dnsmasq")
-o:value("chinadns-ng", "Dnsmasq + ChinaDNS-NG")
+o:value("chinadns-ng", translate("ChinaDNS-NG (recommended)"))
 
 o = s:option(Flag, "filter_proxy_ipv6", translate("Filter Proxy Host IPv6"), translate("Experimental feature."))
 o.default = "0"
@@ -282,7 +287,7 @@ if has_xray then
 	o:value("xray", "Xray")
 end
 
-o = s:option(ListValue, "xray_dns_mode", " ")
+o = s:option(ListValue, "xray_dns_mode", translate("Request protocol"))
 o:value("tcp", "TCP")
 o:value("tcp+doh", "TCP + DoH (" .. translate("A/AAAA type") .. ")")
 o:depends("dns_mode", "xray")
@@ -295,7 +300,7 @@ o.write = function(self, section, value)
 	end
 end
 
-o = s:option(ListValue, "singbox_dns_mode", " ")
+o = s:option(ListValue, "singbox_dns_mode", translate("Request protocol"))
 o:value("tcp", "TCP")
 o:value("doh", "DoH")
 o:depends("dns_mode", "sing-box")

@@ -15,7 +15,8 @@ TMP_ACL_PATH=$TMP_PATH/acl
 TMP_IFACE_PATH=$TMP_PATH/iface
 TMP_PATH2=/tmp/etc/${CONFIG}_tmp
 DNSMASQ_PATH=/etc/dnsmasq.d
-TMP_DNSMASQ_PATH=/tmp/dnsmasq.d/passwall
+DNSMASQ_CONF_DIR=/tmp/dnsmasq.d
+TMP_DNSMASQ_PATH=${DNSMASQ_CONF_DIR}/${CONFIG}
 LOG_FILE=/tmp/log/$CONFIG.log
 APP_PATH=/usr/share/$CONFIG
 RULES_PATH=/usr/share/${CONFIG}/rules
@@ -207,13 +208,16 @@ check_port_exists() {
 check_depends() {
 	local depends
 	local tables=${1}
+	local file_path="/usr/lib/opkg/info"
+	local file_ext=".control"
+	[ -d "/lib/apk/packages" ] && file_path="/lib/apk/packages" && file_ext=".list"
 	if [ "$tables" == "iptables" ]; then
 		for depends in "iptables-mod-tproxy" "iptables-mod-socket" "iptables-mod-iprange" "iptables-mod-conntrack-extra" "kmod-ipt-nat"; do
-			[ -s "/usr/lib/opkg/info/${depends}.control" ] || echolog "$tables透明代理基础依赖 $depends 未安装..."
+			[ -s "${file_path}/${depends}${file_ext}" ] || echolog "$tables透明代理基础依赖 $depends 未安装..."
 		done
 	else
 		for depends in "kmod-nft-socket" "kmod-nft-tproxy" "kmod-nft-nat"; do
-			[ -s "/usr/lib/opkg/info/${depends}.control" ] || echolog "$tables透明代理基础依赖 $depends 未安装..."
+			[ -s "${file_path}/${depends}${file_ext}" ] || echolog "$tables透明代理基础依赖 $depends 未安装..."
 		done
 	fi
 }
@@ -353,6 +357,17 @@ parse_doh() {
 	__bootstrap=${__bootstrap#[}
 	__bootstrap=${__bootstrap%]}
 	eval "${__url_var}='${__url}' ${__host_var}='${__host}' ${__port_var}='${__port}' ${__bootstrap_var}='${__bootstrap}'"
+}
+
+get_dnsmasq_conf_dir() {
+	local dnsmasq_conf_path=$(grep -l "^conf-dir=" /tmp/etc/dnsmasq.conf.${DEFAULT_DNSMASQ_CFGID})
+	[ -n "$dnsmasq_conf_path" ] && {
+		local dnsmasq_conf_dir=$(grep '^conf-dir=' "$dnsmasq_conf_path" | cut -d'=' -f2 | head -n 1)
+		[ -n "$dnsmasq_conf_dir" ] && {
+			DNSMASQ_CONF_DIR=${dnsmasq_conf_dir%*/}
+			TMP_DNSMASQ_PATH=${DNSMASQ_CONF_DIR}/${CONFIG}
+		}
+	}
 }
 
 run_ipt2socks() {
@@ -531,137 +546,20 @@ run_dns2socks() {
 }
 
 run_chinadns_ng() {
-	local _flag _listen_port _dns_local _dns_trust _no_ipv6_trust _use_direct_list _use_proxy_list _gfwlist _chnlist _default_mode _default_tag
+	local _flag _listen_port _dns_local _dns_trust _no_ipv6_trust _use_direct_list _use_proxy_list _gfwlist _chnlist _default_mode _default_tag _no_logic_log _tcp_node
+	local _extra_param=""
 	eval_set_val $@
 
 	local _CONF_FILE=$TMP_ACL_PATH/$_flag/chinadns_ng.conf
 	local _LOG_FILE=$TMP_ACL_PATH/$_flag/chinadns_ng.log
 	_LOG_FILE="/dev/null"
 
-	cat <<-EOF > ${_CONF_FILE}
-		verbose
-		bind-addr 127.0.0.1
-		bind-port ${_listen_port}
-		china-dns ${_dns_local}
-		trust-dns ${_dns_trust}
-		filter-qtype 65
-	EOF
+	_extra_param="-FLAG ${_flag} -TCP_NODE ${_tcp_node} -LISTEN_PORT ${_listen_port} -DNS_LOCAL ${_dns_local} -DNS_TRUST ${_dns_trust}"
+	_extra_param="${_extra_param} -USE_DIRECT_LIST ${_use_direct_list} -USE_PROXY_LIST ${_use_proxy_list} -USE_BLOCK_LIST ${_use_block_list}"
+	_extra_param="${_extra_param} -GFWLIST ${_gfwlist} -CHNLIST ${_chnlist} -NO_IPV6_TRUST ${_no_ipv6_trust} -DEFAULT_MODE ${_default_mode}"
+	_extra_param="${_extra_param} -DEFAULT_TAG ${_default_tag} -NFTFLAG ${nftflag} -NO_LOGIC_LOG ${_no_logic_log}"
 
-	# This function may be called multiple times, so add a condition here to avoid repeated execution.
-	[ ! -f "${TMP_PATH}/vpslist" ] && {
-		servers=$(uci show "${CONFIG}" | grep ".address=" | cut -d "'" -f 2 | grep -v "engage.cloudflareclient.com")
-		hosts_foreach "servers" host_from_url | grep '[a-zA-Z]$' | sort -u > "${TMP_PATH}/vpslist"
-	}
-	[ -s "${TMP_PATH}/vpslist" ] && {
-		local vpslist4_set="passwall_vpslist"
-		local vpslist6_set="passwall_vpslist6"
-		[ "$nftflag" = "1" ] && {
-			vpslist4_set="inet@passwall@${vpslist4_set}"
-			vpslist6_set="inet@passwall@${vpslist6_set}"
-		}
-		cat <<-EOF >> ${_CONF_FILE}
-			group vpslist
-			group-dnl ${TMP_PATH}/vpslist
-			group-upstream ${_dns_local}
-			group-ipset ${vpslist4_set},${vpslist6_set}
-		EOF
-	}
-
-	[ "${_use_direct_list}" = "1" ] && [ -s "${RULES_PATH}/direct_host" ] && {
-		local whitelist4_set="passwall_whitelist"
-		local whitelist6_set="passwall_whitelist6"
-		[ "$nftflag" = "1" ] && {
-			whitelist4_set="inet@passwall@${whitelist4_set}"
-			whitelist6_set="inet@passwall@${whitelist6_set}"
-		}
-		cat <<-EOF >> ${_CONF_FILE}
-			group directlist
-			group-dnl ${RULES_PATH}/direct_host
-			group-upstream ${_dns_local}
-			group-ipset ${whitelist4_set},${whitelist6_set}
-		EOF
-	}
-
-	[ "${_use_proxy_list}" = "1" ] && [ -s "${RULES_PATH}/proxy_host" ] && {
-		local blacklist4_set="passwall_blacklist"
-		local blacklist6_set="passwall_blacklist6"
-		[ "$nftflag" = "1" ] && {
-			blacklist4_set="inet@passwall@${blacklist4_set}"
-			blacklist6_set="inet@passwall@${blacklist6_set}"
-		}
-		cat <<-EOF >> ${_CONF_FILE}
-			group proxylist
-			group-dnl ${RULES_PATH}/proxy_host
-			group-upstream ${_dns_trust}
-			group-ipset ${blacklist4_set},${blacklist6_set}
-		EOF
-		[ "${_no_ipv6_trust}" = "1" ] && echo "no-ipv6 tag:proxylist" >> ${_CONF_FILE}
-	}
-
-	[ "${_gfwlist}" = "1" ] && [ -s "${RULES_PATH}/gfwlist" ] && {
-		local gfwlist4_set="passwall_gfwlist"
-		local gfwlist6_set="passwall_gfwlist6"
-		[ "$nftflag" = "1" ] && {
-			gfwlist4_set="inet@passwall@${gfwlist4_set}"
-			gfwlist6_set="inet@passwall@${gfwlist6_set}"
-		}
-		cat <<-EOF >> ${_CONF_FILE}
-			gfwlist-file ${RULES_PATH}/gfwlist
-			add-taggfw-ip ${gfwlist4_set},${gfwlist6_set}
-		EOF
-		[ "${_no_ipv6_trust}" = "1" ] && echo "no-ipv6 tag:gfw" >> ${_CONF_FILE}
-	}
-
-	[ "${_chnlist}" != "0" ] && [ -s "${RULES_PATH}/chnlist" ] && {
-		local chnroute4_set="passwall_chnroute"
-		local chnroute6_set="passwall_chnroute6"
-		[ "$nftflag" = "1" ] && {
-			chnroute4_set="inet@passwall@${chnroute4_set}"
-			chnroute6_set="inet@passwall@${chnroute6_set}"
-		}
-
-		[ "${_chnlist}" = "direct" ] && {
-			cat <<-EOF >> ${_CONF_FILE}
-				chnlist-file ${RULES_PATH}/chnlist
-				ipset-name4 ${chnroute4_set}
-				ipset-name6 ${chnroute6_set}
-				add-tagchn-ip
-				chnlist-first
-			EOF
-		}
-
-		#回中国模式
-		[ "${_chnlist}" = "proxy" ] && {
-			cat <<-EOF >> ${_CONF_FILE}
-				group chn_proxy
-				group-dnl ${RULES_PATH}/chnlist
-				group-upstream ${_dns_trust}
-				group-ipset ${chnroute4_set},${chnroute6_set}
-			EOF
-			[ "${_no_ipv6_trust}" = "1" ] && echo "no-ipv6 tag:chn_proxy" >> ${_CONF_FILE}
-		}
-	}
-
-	#只使用gfwlist模式，GFW列表以外的域名及默认使用本地DNS
-	[ "${_gfwlist}" = "1" ] && [ "${_chnlist}" = "0" ] && _default_tag="chn"
-	#回中国模式，中国列表以外的域名及默认使用本地DNS
-	[ "${_chnlist}" = "proxy" ] && _default_tag="chn"
-	#全局模式，默认使用远程DNS
-	[ "${_default_mode}" = "proxy" ] && [ "${_chnlist}" = "0" ] && [ "${_gfwlist}" = "0" ] && {
-		_default_tag="gfw"
-		[ "${_no_ipv6_trust}" = "1" ] && echo "no-ipv6" >> ${_CONF_FILE}
-	}
-
-	# 是否接受直连 DNS 空响应
-	[ "${_default_tag}" = "none_noip" ] && echo "noip-as-chnip" >> ${_CONF_FILE}
-	
-	([ -z "${_default_tag}" ] || [ "${_default_tag}" = "smart" ] || [ "${_default_tag}" = "none_noip" ]) && _default_tag="none"
-	echo "default-tag ${_default_tag}" >> ${_CONF_FILE}
-
-	[ "${_flag}" = "default" ] && [ "${_default_tag}" = "none" ] && {
-		echo "verdict-cache 4096" >> ${_CONF_FILE}
-	}
-
+	lua $APP_PATH/helper_chinadns_add.lua ${_extra_param} > ${_CONF_FILE}
 	ln_run "$(first_type chinadns-ng)" chinadns-ng "${_LOG_FILE}" -C ${_CONF_FILE}
 }
 
@@ -887,6 +785,7 @@ run_redir() {
 		esac
 	;;
 	TCP)
+		[ "$TCP_UDP" = "1" ] && echolog "UDP节点：与TCP节点相同"
 		tcp_node_socks=1
 		tcp_node_socks_bind_local=$(config_t_get global tcp_node_socks_bind_local 1)
 		tcp_node_socks_bind="127.0.0.1"
@@ -965,10 +864,10 @@ run_redir() {
 
 				case "$(config_t_get global direct_dns_mode "auto")" in
 					udp)
-						_args="${_args} direct_dns_udp_server=$(config_t_get global direct_dns_udp 223.5.5.5 | sed 's/:/#/g')
+						_args="${_args} direct_dns_udp_server=$(config_t_get global direct_dns_udp 223.5.5.5 | sed 's/:/#/g')"
 					;;
 					tcp)
-						_args="${_args} direct_dns_tcp_server=$(config_t_get global direct_dns_tcp 223.5.5.5 | sed 's/:/#/g')
+						_args="${_args} direct_dns_tcp_server=$(config_t_get global direct_dns_tcp 223.5.5.5 | sed 's/:/#/g')"
 					;;
 					dot)
 						local tmp_dot_dns=$(config_t_get global direct_dns_dot "tls://dot.pub@1.12.12.12")
@@ -1374,39 +1273,56 @@ start_dns() {
 	local china_ng_local_dns=$(IFS=','; set -- $LOCAL_DNS; [ "${1%%[#:]*}" = "127.0.0.1" ] && echo "$1" || ([ -n "$2" ] && echo "$1,$2" || echo "$1"))
 	local sing_box_local_dns=
 	local direct_dns_mode=$(config_t_get global direct_dns_mode "auto")
+
+	#获取访问控制节点所使用的DNS分流模式
+	local ACL_RULE_DNSMASQ=0
+	for acl_section in $(uci show ${CONFIG} | grep "=acl_rule" | cut -d '.' -sf 2 | cut -d '=' -sf 1); do
+		if [ "$(config_n_get $acl_section enabled)" = "1" ] && \
+		   [ "$(config_n_get $acl_section dns_shunt)" = "dnsmasq" ]; then
+			ACL_RULE_DNSMASQ=1
+			break
+		fi
+	done
+
 	case "$direct_dns_mode" in
 		udp)
 			LOCAL_DNS=$(config_t_get global direct_dns_udp 223.5.5.5 | sed 's/:/#/g')
 			china_ng_local_dns=${LOCAL_DNS}
 			sing_box_local_dns="direct_dns_udp_server=${LOCAL_DNS}"
-			IPT_APPEND_DNS=${LOCAL_DNS}
 		;;
-		tcp)
-			LOCAL_DNS="127.0.0.1#${dns_listen_port}"
-			dns_listen_port=$(expr $dns_listen_port + 1)
+		tcp)	
 			local DIRECT_DNS=$(config_t_get global direct_dns_tcp 223.5.5.5 | sed 's/:/#/g')
 			china_ng_local_dns="tcp://${DIRECT_DNS}"
 			sing_box_local_dns="direct_dns_tcp_server=${DIRECT_DNS}"
-			IPT_APPEND_DNS="${LOCAL_DNS},${DIRECT_DNS}"
-			ln_run "$(first_type dns2tcp)" dns2tcp "/dev/null" -L "${LOCAL_DNS}" -R "$(get_first_dns DIRECT_DNS 53)" -v
-			echolog "  - dns2tcp(${LOCAL_DNS}) -> tcp://$(get_first_dns DIRECT_DNS 53 | sed 's/#/:/g')"
-			echolog "  * 请确保上游直连 DNS 支持 TCP 查询。"
+
+			#当全局（包括访问控制节点）开启chinadns-ng时，不启用dns2tcp
+			[ "$DNS_SHUNT" != "chinadns-ng" ] || [ "$ACL_RULE_DNSMASQ" = "1" ] && {
+				LOCAL_DNS="127.0.0.1#${dns_listen_port}"
+				dns_listen_port=$(expr $dns_listen_port + 1)
+				ln_run "$(first_type dns2tcp)" dns2tcp "/dev/null" -L "${LOCAL_DNS}" -R "$(get_first_dns DIRECT_DNS 53)" -v
+				echolog "  - dns2tcp(${LOCAL_DNS}) -> tcp://$(get_first_dns DIRECT_DNS 53 | sed 's/#/:/g')"
+				echolog "  * 请确保上游直连 DNS 支持 TCP 查询。"
+			}
 		;;
 		dot)
 			if [ "$chinadns_tls" != "nil" ]; then
-				LOCAL_DNS="127.0.0.1#${dns_listen_port}"
-				local cdns_listen_port=${dns_listen_port}
-				dns_listen_port=$(expr $dns_listen_port + 1)
 				local DIRECT_DNS=$(config_t_get global direct_dns_dot "tls://dot.pub@1.12.12.12")
 				china_ng_local_dns=${DIRECT_DNS}
-				ln_run "$(first_type chinadns-ng)" chinadns-ng "/dev/null" -b 127.0.0.1 -l ${cdns_listen_port} -c ${DIRECT_DNS} -d chn
-				echolog "  - ChinaDNS-NG(${LOCAL_DNS}) -> ${DIRECT_DNS}"
-				echolog "  * 请确保上游直连 DNS 支持 DoT 查询。"
+
+				#当全局（包括访问控制节点）开启chinadns-ng时，不启用dns2dot
+				[ "$DNS_SHUNT" != "chinadns-ng" ] || [ "$ACL_RULE_DNSMASQ" = "1" ] && {
+					LOCAL_DNS="127.0.0.1#${dns_listen_port}"
+					local cdns_listen_port=${dns_listen_port}
+					dns_listen_port=$(expr $dns_listen_port + 1)
+					ln_run "$(first_type chinadns-ng)" chinadns-ng "/dev/null" -b 127.0.0.1 -l ${cdns_listen_port} -c ${DIRECT_DNS} -d chn
+					echolog "  - ChinaDNS-NG(${LOCAL_DNS}) -> ${DIRECT_DNS}"
+					echolog "  * 请确保上游直连 DNS 支持 DoT 查询。"
+				}
 
 				local tmp_dot_ip=$(echo "$DIRECT_DNS" | sed -n 's/.*:\/\/\([^@#]*@\)*\([^@#]*\).*/\2/p')
 				local tmp_dot_port=$(echo "$DIRECT_DNS" | sed -n 's/.*#\([0-9]\+\).*/\1/p')
-				sing_box_local_dns="direct_dns_dot_server=$tmp_dot_ip#${tmp_dot_port:-853}"
-				IPT_APPEND_DNS="${LOCAL_DNS},$tmp_dot_ip#${tmp_dot_port:-853}"
+				DIRECT_DNS=$tmp_dot_ip#${tmp_dot_port:-853}
+				sing_box_local_dns="direct_dns_dot_server=${DIRECT_DNS}"
 			else
 				echolog "  - 你的ChinaDNS-NG版本不支持DoT，直连DNS将使用默认地址。"
 			fi
@@ -1417,8 +1333,49 @@ start_dns() {
 		;;
 	esac
 
+	# 追加直连DNS到iptables/nftables
+	[ "$(config_t_get global_haproxy balancing_enable 0)" != "1" ] && IPT_APPEND_DNS=
+	add_default_port() {
+		[ -z "$1" ] && echo "" || echo "$1" | awk -F',' '{for(i=1;i<=NF;i++){if($i !~ /#/) $i=$i"#53";} print $0;}' OFS=','
+	}
+	LOCAL_DNS=$(add_default_port "$LOCAL_DNS")
+	IPT_APPEND_DNS=$(add_default_port "${IPT_APPEND_DNS:-$LOCAL_DNS}")
+	echo "$IPT_APPEND_DNS" | grep -q -E "(^|,)$LOCAL_DNS(,|$)" || IPT_APPEND_DNS="${IPT_APPEND_DNS:+$IPT_APPEND_DNS,}$LOCAL_DNS"
+	[ -n "$DIRECT_DNS" ] && {
+		DIRECT_DNS=$(add_default_port "$DIRECT_DNS")
+		echo "$IPT_APPEND_DNS" | grep -q -E "(^|,)$DIRECT_DNS(,|$)" || IPT_APPEND_DNS="${IPT_APPEND_DNS:+$IPT_APPEND_DNS,}$DIRECT_DNS"
+	}
+	# 排除127.0.0.1的条目
+	IPT_APPEND_DNS=$(echo "$IPT_APPEND_DNS" | awk -F',' '{for(i=1;i<=NF;i++) if($i !~ /^127\.0\.0\.1/) printf (i>1?",":"") $i; print ""}' | sed 's/^,\|,$//g')
+
 	TUN_DNS="127.0.0.1#${dns_listen_port}"
 	[ "${resolve_dns}" == "1" ] && TUN_DNS="127.0.0.1#${resolve_dns_port}"
+
+	[ "${DNS_SHUNT}" = "smartdns" ] && {
+		if command -v smartdns > /dev/null 2>&1; then
+			rm -rf $TMP_PATH2/dnsmasq_default*
+			local group_domestic=$(config_t_get global group_domestic)
+			local smartdns_remote_dns=$(config_t_get global smartdns_remote_dns)
+			if [ -n "${smartdns_remote_dns}" -a "${smartdns_remote_dns}" != "nil" ]; then
+				smartdns_remote_dns=$(echo ${smartdns_remote_dns} | tr -s ' ' '|')
+			else
+				smartdns_remote_dns="tcp://1.1.1.1"
+			fi
+			lua $APP_PATH/helper_smartdns_add.lua -FLAG "default" -SMARTDNS_CONF "/tmp/etc/smartdns/$CONFIG.conf" \
+				-LOCAL_GROUP ${group_domestic:-nil} -REMOTE_GROUP "passwall_proxy" -REMOTE_PROXY_SERVER ${TCP_SOCKS_server}  -USE_DEFAULT_DNS "${USE_DEFAULT_DNS:-direct}" \
+				-TUN_DNS ${smartdns_remote_dns} \
+				-USE_DIRECT_LIST "${USE_DIRECT_LIST}" -USE_PROXY_LIST "${USE_PROXY_LIST}" -USE_BLOCK_LIST "${USE_BLOCK_LIST}" -USE_GFW_LIST "${USE_GFW_LIST}" -CHN_LIST "${CHN_LIST}" \
+				-TCP_NODE ${TCP_NODE} -DEFAULT_PROXY_MODE "${TCP_PROXY_MODE}" -NO_PROXY_IPV6 ${FILTER_PROXY_IPV6:-0} -NFTFLAG ${nftflag:-0} \
+				-NO_LOGIC_LOG ${NO_LOGIC_LOG:-0}
+			source $APP_PATH/helper_smartdns.sh restart
+			echolog "  - 域名解析：使用SmartDNS，请确保配置正常。"
+			return
+		else
+			DNS_SHUNT="dnsmasq"
+			echolog "  * 未安装SmartDNS，默认使用Dnsmasq进行域名解析！"
+		fi
+	}
+	rm -rf $TMP_PATH2/smartdns_default*
 
 	case "$DNS_MODE" in
 	dns2socks)
@@ -1547,7 +1504,7 @@ start_dns() {
 
 	[ -n "${resolve_dns_log}" ] && echolog "  - ${resolve_dns_log}"
 
-	[ "${use_tcp_node_resolve_dns}" = "1" ] && echolog "  * 请确认上游 DNS 支持 TCP 查询，如非直连地址，确保 TCP 代理打开，并且已经正确转发！"
+	[ "${use_tcp_node_resolve_dns}" = "1" ] && echolog "  * 请确认上游 DNS 支持 TCP/DoT/DoH 查询，如非直连地址，确保 TCP 代理打开，并且已经正确转发！"
 	[ "${use_udp_node_resolve_dns}" = "1" ] && echolog "  * 请确认上游 DNS 支持 UDP 查询并已使用 UDP 节点，如上游 DNS 非直连地址，确保 UDP 代理打开，并且已经正确转发！"
 
 	[ "$DNS_SHUNT" = "chinadns-ng" ] && [ -n "$(first_type chinadns-ng)" ] && {
@@ -1562,6 +1519,8 @@ start_dns() {
 		local china_ng_listen="127.0.0.1#${china_ng_listen_port}"
 		[ -z "${china_ng_trust_dns}" ] && local china_ng_trust_dns=${TUN_DNS}
 
+		echolog "  - ChinaDNS-NG(${china_ng_listen})：直连DNS：${china_ng_local_dns}，可信DNS：${china_ng_trust_dns}"
+
 		run_chinadns_ng \
 			_flag="default" \
 			_listen_port=${china_ng_listen_port} \
@@ -1570,12 +1529,13 @@ start_dns() {
 			_no_ipv6_trust=${FILTER_PROXY_IPV6} \
 			_use_direct_list=${USE_DIRECT_LIST} \
 			_use_proxy_list=${USE_PROXY_LIST} \
+			_use_block_list=${USE_BLOCK_LIST} \
 			_gfwlist=${USE_GFW_LIST} \
 			_chnlist=${CHN_LIST} \
 			_default_mode=${TCP_PROXY_MODE} \
-			_default_tag=$(config_t_get global chinadns_ng_default_tag smart)
-
-		echolog "  - ChinaDNS-NG(${china_ng_listen})：直连DNS：${china_ng_local_dns}，可信DNS：${china_ng_trust_dns}"
+			_default_tag=$(config_t_get global chinadns_ng_default_tag smart) \
+			_no_logic_log=0 \
+			_tcp_node=${TCP_NODE}
 
 		USE_DEFAULT_DNS="chinadns_ng"
 	}
@@ -1585,8 +1545,8 @@ start_dns() {
 		[ "$(expr $dnsmasq_version \>= 2.87)" == 0 ] && echolog "Dnsmasq版本低于2.87，有可能无法正常使用！！！"
 	}
 	source $APP_PATH/helper_dnsmasq.sh stretch
-	lua $APP_PATH/helper_dnsmasq_add.lua -FLAG "default" -TMP_DNSMASQ_PATH ${TMP_DNSMASQ_PATH} \
-		-DNSMASQ_CONF_FILE "/tmp/dnsmasq.d/dnsmasq-passwall.conf" -DEFAULT_DNS ${DEFAULT_DNS} -LOCAL_DNS ${LOCAL_DNS} \
+	lua $APP_PATH/helper_dnsmasq_add.lua -FLAG "default" -TMP_DNSMASQ_PATH ${TMP_DNSMASQ_PATH} -DNSMASQ_CONF_DIR ${DNSMASQ_CONF_DIR} \
+		-DNSMASQ_CONF_FILE "${DNSMASQ_CONF_DIR}/dnsmasq-${CONFIG}.conf" -DEFAULT_DNS ${DEFAULT_DNS} -LOCAL_DNS ${LOCAL_DNS} \
 		-TUN_DNS ${TUN_DNS} -REMOTE_FAKEDNS ${fakedns:-0} -USE_DEFAULT_DNS "${USE_DEFAULT_DNS:-direct}" -CHINADNS_DNS ${china_ng_listen:-0} \
 		-USE_DIRECT_LIST "${USE_DIRECT_LIST}" -USE_PROXY_LIST "${USE_PROXY_LIST}" -USE_BLOCK_LIST "${USE_BLOCK_LIST}" -USE_GFW_LIST "${USE_GFW_LIST}" -CHN_LIST "${CHN_LIST}" \
 		-TCP_NODE ${TCP_NODE} -DEFAULT_PROXY_MODE ${TCP_PROXY_MODE} -NO_PROXY_IPV6 ${DNSMASQ_FILTER_PROXY_IPV6:-0} -NFTFLAG ${nftflag:-0} \
@@ -1619,6 +1579,7 @@ add_ip2route() {
 
 delete_ip2route() {
 	[ -d "${TMP_ROUTE_PATH}" ] && {
+		local interface
 		for interface in $(ls ${TMP_ROUTE_PATH}); do
 			for ip in $(cat ${TMP_ROUTE_PATH}/${interface}); do
 				route del -host ${ip} dev ${interface} >/dev/null 2>&1
@@ -1653,27 +1614,31 @@ acl_app() {
 		for item in $items; do
 			sid=$(uci -q show "${CONFIG}.${item}" | grep "=acl_rule" | awk -F '=' '{print $1}' | awk -F '.' '{print $2}')
 			eval $(uci -q show "${CONFIG}.${item}" | cut -d'.' -sf 3-)
+
 			[ "$enabled" = "1" ] || continue
 
-			[ -z "${sources}" ] && continue
 			for s in $sources; do
+				local s2
 				is_iprange=$(lua_api "iprange(\"${s}\")")
 				if [ "${is_iprange}" = "true" ]; then
-					rule_list="${rule_list}\niprange:${s}"
+					s2="iprange:${s}"
 				elif [ -n "$(echo ${s} | grep '^ipset:')" ]; then
-					rule_list="${rule_list}\nipset:${s}"
+					s2="ipset:${s}"
 				else
 					_ip_or_mac=$(lua_api "ip_or_mac(\"${s}\")")
 					if [ "${_ip_or_mac}" = "ip" ]; then
-						rule_list="${rule_list}\nip:${s}"
+						s2="ip:${s}"
 					elif [ "${_ip_or_mac}" = "mac" ]; then
-						rule_list="${rule_list}\nmac:${s}"
+						s2="mac:${s}"
 					fi
 				fi
+				[ -n "${s2}" ] && source_list="${source_list}\n${s2}"
+				unset s2
 			done
-			[ -z "${rule_list}" ] && continue
+
 			mkdir -p $TMP_ACL_PATH/$sid
-			echo -e "${rule_list}" | sed '/^$/d' > $TMP_ACL_PATH/$sid/rule_list
+
+			[ ! -z "${source_list}" ] && echo -e "${source_list}" | sed '/^$/d' > $TMP_ACL_PATH/$sid/source_list
 
 			use_global_config=${use_global_config:-0}
 			tcp_node=${tcp_node:-nil}
@@ -1760,10 +1725,13 @@ acl_app() {
 									_no_ipv6_trust=${filter_proxy_ipv6} \
 									_use_direct_list=${use_direct_list} \
 									_use_proxy_list=${use_proxy_list} \
+									_use_block_list=${use_block_list} \
 									_gfwlist=${use_gfw_list} \
 									_chnlist=${chn_list} \
 									_default_mode=${tcp_proxy_mode} \
-									_default_tag=${chinadns_ng_default_tag:-smart}
+									_default_tag=${chinadns_ng_default_tag:-smart} \
+									_no_logic_log=1 \
+									_tcp_node=${tcp_node}
 
 								use_default_dns="chinadns_ng"
 							}
@@ -1784,7 +1752,7 @@ acl_app() {
 								dnsmasq_version=$(dnsmasq -v | grep -i "Dnsmasq version " | awk '{print $3}')
 								[ "$(expr $dnsmasq_version \>= 2.87)" == 0 ] && echolog "Dnsmasq版本低于2.87，有可能无法正常使用！！！"
 							}
-							lua $APP_PATH/helper_dnsmasq_add.lua -FLAG ${sid} -TMP_DNSMASQ_PATH $TMP_ACL_PATH/$sid/dnsmasq.d \
+							lua $APP_PATH/helper_dnsmasq_add.lua -FLAG ${sid} -TMP_DNSMASQ_PATH $TMP_ACL_PATH/$sid/dnsmasq.d -DNSMASQ_CONF_DIR ${DNSMASQ_CONF_DIR} \
 								-DNSMASQ_CONF_FILE $TMP_ACL_PATH/$sid/dnsmasq.conf -DEFAULT_DNS $DEFAULT_DNS -LOCAL_DNS $LOCAL_DNS \
 								-USE_DIRECT_LIST "${use_direct_list}" -USE_PROXY_LIST "${use_proxy_list}" -USE_BLOCK_LIST "${use_block_list}" -USE_GFW_LIST "${use_gfw_list}" -CHN_LIST "${chn_list}" \
 								-TUN_DNS "127.0.0.1#${_dns_port}" -REMOTE_FAKEDNS 0 -USE_DEFAULT_DNS "${use_default_dns:-direct}" -CHINADNS_DNS ${_china_ng_listen:-0} \
@@ -1901,8 +1869,8 @@ acl_app() {
 				udp_flag=1
 			}
 			[ -n "$redirect_dns_port" ] && echo "${redirect_dns_port}" > $TMP_ACL_PATH/$sid/var_redirect_dns_port
-			unset enabled sid remarks sources use_global_config tcp_node udp_node use_direct_list use_proxy_list use_block_list use_gfw_list chn_list tcp_proxy_mode udp_proxy_mode filter_proxy_ipv6 dns_mode remote_dns v2ray_dns_mode remote_dns_doh dns_client_ip
-			unset _ip _mac _iprange _ipset _ip_or_mac rule_list tcp_port udp_port config_file _extra_param
+			unset enabled sid remarks sources interface use_global_config tcp_node udp_node use_direct_list use_proxy_list use_block_list use_gfw_list chn_list tcp_proxy_mode udp_proxy_mode filter_proxy_ipv6 dns_mode remote_dns v2ray_dns_mode remote_dns_doh dns_client_ip
+			unset _ip _mac _iprange _ipset _ip_or_mac source_list tcp_port udp_port config_file _extra_param
 			unset _china_ng_listen _chinadns_local_dns _direct_dns_mode chinadns_ng_default_tag dnsmasq_filter_proxy_ipv6
 			unset redirect_dns_port
 		done
@@ -1969,6 +1937,7 @@ stop() {
 	unset V2RAY_LOCATION_ASSET
 	unset XRAY_LOCATION_ASSET
 	stop_crontab
+	source $APP_PATH/helper_smartdns.sh del
 	source $APP_PATH/helper_dnsmasq.sh del
 	source $APP_PATH/helper_dnsmasq.sh restart no_log=1
 	[ -s "$TMP_PATH/bridge_nf_ipt" ] && sysctl -w net.bridge.bridge-nf-call-iptables=$(cat $TMP_PATH/bridge_nf_ipt) >/dev/null 2>&1
@@ -1986,10 +1955,12 @@ TCP_NODE=$(config_t_get global tcp_node nil)
 UDP_REDIR_PORT=1051
 UDP_NODE=$(config_t_get global udp_node nil)
 TCP_UDP=0
-[ "$UDP_NODE" == "tcp" ] && {
+if [ "$UDP_NODE" == "tcp" ]; then
 	UDP_NODE=$TCP_NODE
 	TCP_UDP=1
-}
+elif [ "$UDP_NODE" == "$TCP_NODE" ]; then
+	TCP_UDP=1
+fi
 [ "$ENABLED" == 1 ] && {
 	[ "$TCP_NODE" != "nil" ] && [ "$(config_get_type $TCP_NODE nil)" != "nil" ] && ENABLED_DEFAULT_ACL=1
 	[ "$UDP_NODE" != "nil" ] && [ "$(config_get_type $UDP_NODE nil)" != "nil" ] && ENABLED_DEFAULT_ACL=1
@@ -2048,6 +2019,8 @@ IPT_APPEND_DNS=${LOCAL_DNS}
 DNS_QUERY_STRATEGY="UseIP"
 [ "$FILTER_PROXY_IPV6" = "1" ] && DNS_QUERY_STRATEGY="UseIPv4"
 DNSMASQ_FILTER_PROXY_IPV6=${FILTER_PROXY_IPV6}
+
+get_dnsmasq_conf_dir
 
 export V2RAY_LOCATION_ASSET=$(config_t_get global_rules v2ray_location_asset "/usr/share/v2ray/")
 export XRAY_LOCATION_ASSET=$V2RAY_LOCATION_ASSET
