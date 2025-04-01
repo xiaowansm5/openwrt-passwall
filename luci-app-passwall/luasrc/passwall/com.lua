@@ -24,7 +24,7 @@ _M.hysteria = {
 	}
 }
 
-_M.singbox = {
+_M["sing-box"] = {
 	name = "Sing-Box",
 	repo = "SagerNet/sing-box",
 	get_url = gh_release_url,
@@ -76,7 +76,8 @@ _M["chinadns-ng"] = {
 		armv5   = "wolfssl@arm.*v5te",
 		armv6   = "wolfssl@arm.*v6t2",
 		armv7   = "wolfssl@arm.*eabihf.*v7a",
-		armv8   = "wolfssl_noasm@aarch64.*v8a"
+		armv8   = "wolfssl_noasm@aarch64.*v8a",
+		riscv64 = "wolfssl@riscv64.*"
 	}
 }
 
